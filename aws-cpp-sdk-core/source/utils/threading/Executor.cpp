@@ -16,6 +16,7 @@
 #include <aws/core/utils/threading/Executor.h>
 #include <aws/core/utils/threading/ThreadTask.h>
 #include <thread>
+#include <iostream>
 
 static const char* POOLED_CLASS_TAG = "PooledThreadExecutor";
 
@@ -120,17 +121,21 @@ BlockingExecutor::~BlockingExecutor()
 
 bool BlockingExecutor::SubmitToThread(std::function<void()>&& fn)
 {
+    std::cout << "Task submitted (currently " << m_numTasksRunning << "/" << m_poolSize << ")" << std::endl;
     std::unique_lock<std::recursive_mutex> locker(m_syncPointLock);
     assert(m_numTasksRunning <= m_poolSize);
     if (m_numTasksRunning >= m_poolSize)
     {
+        std::cout << "Task blocked" << std::endl;
         m_syncPoint.wait(locker, [&]{
             return m_numTasksRunning < m_poolSize;
         });
+        std::cout << "Task unblocked" << std::endl;
     }
     m_numTasksRunning++;
     locker.unlock();
     
+    std::cout << "Task delegated (now " << m_numTasksRunning << "/" << m_poolSize << ")" << std::endl;
     m_executor->Submit(&BlockingExecutor::ExecuteTask, this, fn);
     return true;
 }
@@ -139,10 +144,12 @@ void BlockingExecutor::ExecuteTask(std::function<void()> fn)
 {
     fn();
     OnTaskComplete();
+    std::cout << "Task completed (now " << m_numTasksRunning << "/" << m_poolSize << ")" << std::endl;
 }
 
 void BlockingExecutor::OnTaskComplete()
 {
+    std::cout << "Task finishing... (" << m_numTasksRunning << "/" << m_poolSize << ")" << std::endl;
     std::unique_lock<std::recursive_mutex> locker(m_syncPointLock);
     assert(m_numTasksRunning <= m_poolSize);
     m_numTasksRunning--;

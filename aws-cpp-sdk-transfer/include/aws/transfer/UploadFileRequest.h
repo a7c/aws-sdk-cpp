@@ -23,6 +23,7 @@
 #include <aws/core/utils/memory/stl/AWSMap.h>
 #include <aws/core/utils/memory/stl/AWSString.h>
 #include <aws/core/utils/memory/stl/AWSStringStream.h>
+#include <aws/core/utils/threading/Executor.h>
 
 #include <aws/s3/model/UploadPartRequest.h>
 
@@ -82,13 +83,15 @@ public:
                       const Aws::String& contentType,
                       Aws::Map<Aws::String, Aws::String>&& metadata,
                       const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                       bool createBucket,
                       bool doConsistencyChecks);
     UploadFileRequest(const Aws::String& fileName, 
                       const Aws::String& bucketName, 
                       const Aws::String& keyName, 
                       const Aws::String& contentType, 
-                      const std::shared_ptr<Aws::S3::S3Client>& s3Client, 
+                      const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                       bool createBucket,
                       bool doConsistencyChecks);
     UploadFileRequest(const Aws::String& fileName,
@@ -97,6 +100,7 @@ public:
                       const Aws::String& contentType,
                       const Aws::Map<Aws::String, Aws::String>& metadata,
                       const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                       bool createBucket,
                       bool doConsistencyChecks);
     virtual ~UploadFileRequest();
@@ -194,14 +198,20 @@ private:
     bool HandleCreateBucketOutcome(const Aws::S3::Model::CreateBucketRequest& request,
         const Aws::S3::Model::CreateBucketOutcome& createBucketOutcome);
 
+    void CreateMultipartUploadHelper(const Aws::S3::Model::CreateMultipartUploadRequest& request);
+    
     bool HandleCreateMultipartUploadOutcome(const Aws::S3::Model::CreateMultipartUploadRequest& request,
         const Aws::S3::Model::CreateMultipartUploadOutcome& outcome);
 
     bool HandleHeadBucketOutcome(const Aws::S3::Model::HeadBucketRequest& request,
         const Aws::S3::Model::HeadBucketOutcome& outcome);
+    
+    void UploadPartHelper(const Aws::S3::Model::UploadPartRequest& request);
 
     bool HandleUploadPartOutcome(const Aws::S3::Model::UploadPartRequest& request,
         const Aws::S3::Model::UploadPartOutcome& outcome);
+    
+    void CompleteMultipartUploadOutcomeHelper(const Aws::S3::Model::CompleteMultipartUploadRequest& request);
 
     bool HandleCompleteMultipartUploadOutcome(const Aws::S3::Model::CompleteMultipartUploadRequest& request,
         const Aws::S3::Model::CompleteMultipartUploadOutcome& outcome);
@@ -235,6 +245,8 @@ private:
     void ReleaseResources();
 
     void SetResourceSet(std::shared_ptr<UploadBufferScopedResourceSetType>& bufferSet);
+    
+    std::shared_ptr<Aws::Utils::Threading::BlockingExecutor> m_executor;
 
     std::shared_ptr<UploadBufferScopedResourceSetType > m_resources;
 
