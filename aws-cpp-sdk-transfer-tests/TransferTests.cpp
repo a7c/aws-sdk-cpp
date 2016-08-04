@@ -71,7 +71,7 @@ static const char* BIG_FILE_KEY = "BigFileKey";
 
 static const char* CANCEL_TEST_FILE_NAME = "CancelTestFile.txt";
 static const char* CANCEL_FILE_KEY = "CancelFileKey";
-static const char* CANCEL_FILE_KEY2 = "CancelFileKey2";
+//static const char* CANCEL_FILE_KEY2 = "CancelFileKey2";
 
 static const char* TEST_BUCKET_NAME_BASE = "transferintegrationtestbucket";
 static const unsigned SMALL_TEST_SIZE = MB5_BUFFER_SIZE / 2;
@@ -1147,86 +1147,88 @@ TEST_F(TransferTests, MultiBigTest)
 
 }
 
+// TODO: This test should be deprecated because the resource handling has been delegated to BlockingExecutor
+    
 // Here we're testing to make sure the expected results occur when the handler we've been given for the upload goes out of scope
 // Behind the scenes our request contexts contain additional shared pointers to our handlers which should keep them in scope
 // meaning they should continue to process as they were last told.  Outstanding requests will finish, cancels will complete
 // the parts in progress and then cancel correctly, and buffers should properly be freed up to hand to the next request to process
-TEST_F(TransferTests, ScopeTests)
-{
-    if (EmptyBucket(GetTestBucketName()))
-    {
-        WaitForBucketToEmpty(GetTestBucketName());
-    }
-    GetObjectRequest getObjectRequest;
-    getObjectRequest.SetBucket(GetTestBucketName());
-    getObjectRequest.SetKey(TEST_FILE_NAME);
-
-    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
-    EXPECT_FALSE(getObjectOutcome.IsSuccess());
-
-    ListMultipartUploadsRequest listMultipartRequest;
-    listMultipartRequest.SetBucket(GetTestBucketName());
-
-    bool createBucket = true; // Yes please, create the bucket
-    const bool cConsistencyChecks = true;
-    const float cCancelPercent = 10.0;
-
-    // First we'll grab a single buffer
-    {
-        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(SMALL_TEST_FILE_NAME, GetTestBucketName(), "", "", createBucket, cConsistencyChecks);
-    }
-
-    createBucket = false;
-
-    // Now grab all available buffers (19 by default though we want 20)
-    {
-        if (EmptyBucket(GetTestBucketName()))
-        {
-            WaitForBucketToEmpty(GetTestBucketName());
-        }
-        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(CANCEL_TEST_FILE_NAME, GetTestBucketName(), CANCEL_FILE_KEY, "", createBucket, cConsistencyChecks);
-
-        uint64_t fileSize = requestPtr->GetFileSize();
-
-        ASSERT_EQ(fileSize, CANCEL_TEST_SIZE / testStrLen * testStrLen);
-
-        ASSERT_FALSE(requestPtr->IsDone());
-        WaitForUploadAndUpdate(requestPtr, cCancelPercent);
-        // Cancel though we have outstanding requests we've started which keep our buffers locked
-        m_transferClient->CancelUpload(requestPtr);
-    }
-    {
-        // Now this guy should start with one buffer (The initial one after it's done)
-        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(CANCEL_TEST_FILE_NAME, GetTestBucketName(), CANCEL_FILE_KEY2, "", createBucket, cConsistencyChecks);
-
-        size_t startBuffers = requestPtr->GetResourcesInUse();
-
-        uint64_t fileSize = requestPtr->GetFileSize();
-
-        ASSERT_EQ(fileSize, CANCEL_TEST_SIZE / testStrLen * testStrLen);
-
-        ASSERT_FALSE(requestPtr->IsDone());
-
-        size_t finalBuffers = startBuffers;
-        unsigned timeoutCount = 0;
-
-        // And some time during the process should collect the buffers from our canceled upload
-        while (timeoutCount++ < TEST_WAIT_TIMEOUT_LONG && !requestPtr->IsDone())
-        {
-            finalBuffers = requestPtr->GetResourcesInUse();
-            if (finalBuffers != startBuffers)
-            {
-                m_transferClient->CancelUpload(requestPtr);
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-
-        // Either we got more buffers, or we started with everything we could use
-        // either because our start value is artificially low or we finished our initial uploads incredibly fast
-        EXPECT_TRUE(startBuffers == m_transferClient->GetConfigBufferCount() || finalBuffers != startBuffers || requestPtr->CompletedSuccessfully());
-    }
-}
+//TEST_F(TransferTests, ScopeTests)
+//{
+//    if (EmptyBucket(GetTestBucketName()))
+//    {
+//        WaitForBucketToEmpty(GetTestBucketName());
+//    }
+//    GetObjectRequest getObjectRequest;
+//    getObjectRequest.SetBucket(GetTestBucketName());
+//    getObjectRequest.SetKey(TEST_FILE_NAME);
+//
+//    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
+//    EXPECT_FALSE(getObjectOutcome.IsSuccess());
+//
+//    ListMultipartUploadsRequest listMultipartRequest;
+//    listMultipartRequest.SetBucket(GetTestBucketName());
+//
+//    bool createBucket = true; // Yes please, create the bucket
+//    const bool cConsistencyChecks = true;
+//    const float cCancelPercent = 10.0;
+//
+//    // First we'll grab a single buffer
+//    {
+//        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(SMALL_TEST_FILE_NAME, GetTestBucketName(), "", "", createBucket, cConsistencyChecks);
+//    }
+//
+//    createBucket = false;
+//
+//    // Now grab all available buffers (19 by default though we want 20)
+//    {
+//        if (EmptyBucket(GetTestBucketName()))
+//        {
+//            WaitForBucketToEmpty(GetTestBucketName());
+//        }
+//        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(CANCEL_TEST_FILE_NAME, GetTestBucketName(), CANCEL_FILE_KEY, "", createBucket, cConsistencyChecks);
+//
+//        uint64_t fileSize = requestPtr->GetFileSize();
+//
+//        ASSERT_EQ(fileSize, CANCEL_TEST_SIZE / testStrLen * testStrLen);
+//
+//        ASSERT_FALSE(requestPtr->IsDone());
+//        WaitForUploadAndUpdate(requestPtr, cCancelPercent);
+//        // Cancel though we have outstanding requests we've started which keep our buffers locked
+//        m_transferClient->CancelUpload(requestPtr);
+//    }
+//    {
+//        // Now this guy should start with one buffer (The initial one after it's done)
+//        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(CANCEL_TEST_FILE_NAME, GetTestBucketName(), CANCEL_FILE_KEY2, "", createBucket, cConsistencyChecks);
+//
+//        size_t startBuffers = requestPtr->GetResourcesInUse();
+//
+//        uint64_t fileSize = requestPtr->GetFileSize();
+//
+//        ASSERT_EQ(fileSize, CANCEL_TEST_SIZE / testStrLen * testStrLen);
+//
+//        ASSERT_FALSE(requestPtr->IsDone());
+//
+//        size_t finalBuffers = startBuffers;
+//        unsigned timeoutCount = 0;
+//
+//        // And some time during the process should collect the buffers from our canceled upload
+//        while (timeoutCount++ < TEST_WAIT_TIMEOUT_LONG && !requestPtr->IsDone())
+//        {
+//            finalBuffers = requestPtr->GetResourcesInUse();
+//            if (finalBuffers != startBuffers)
+//            {
+//                m_transferClient->CancelUpload(requestPtr);
+//                break;
+//            }
+//            std::this_thread::sleep_for(std::chrono::seconds(1));
+//        }
+//
+//        // Either we got more buffers, or we started with everything we could use
+//        // either because our start value is artificially low or we finished our initial uploads incredibly fast
+//        EXPECT_TRUE(startBuffers == m_transferClient->GetConfigBufferCount() || finalBuffers != startBuffers || requestPtr->CompletedSuccessfully());
+//    }
+//}
 
 // Single part upload with metadata specified
 TEST_F(TransferTests, SinglePartUploadWithMetadataTest)

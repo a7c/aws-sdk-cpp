@@ -239,26 +239,17 @@ private:
     void SendPutObjectRequest(const Aws::S3::Model::PutObjectRequest& request);
 
     bool IsUsingBuffer(const std::shared_ptr<UploadBuffer>& buffer) const;
-
-    void CheckReacquireBuffers();
-
-    void ReleaseResources();
-
-    void SetResourceSet(std::shared_ptr<UploadBufferScopedResourceSetType>& bufferSet);
     
     std::shared_ptr<Aws::Utils::Threading::BlockingExecutor> m_executor;
 
-    std::shared_ptr<UploadBufferScopedResourceSetType > m_resources;
-
     mutable std::mutex m_fileRequestMutex;
 
-    std::mutex m_resourceMutex;
     std::mutex m_completePartMutex;
     std::mutex m_reuseMutex;
     mutable std::mutex m_pendingMutex;
     std::mutex m_bufferMutex;
 
-     uint64_t m_bytesRemaining;
+    uint64_t m_bytesRemaining;
 
     std::atomic<uint32_t> m_partCount;
     std::atomic<uint32_t> m_partsReturned;

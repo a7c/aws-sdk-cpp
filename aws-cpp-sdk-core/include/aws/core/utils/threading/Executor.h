@@ -135,6 +135,9 @@ namespace Aws
                 BlockingExecutor(BlockingExecutor&&) = delete;
                 BlockingExecutor& operator =(BlockingExecutor&&) = delete;
                 
+                /** Returns the max number of tasks that can run at once. */
+                size_t GetPoolSize() { return m_poolSize; }
+                
                 /** Blocks until all tasks are done running. */
                 void WaitForCompletion();
                 

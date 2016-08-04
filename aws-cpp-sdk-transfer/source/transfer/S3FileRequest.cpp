@@ -75,6 +75,11 @@ bool S3FileRequest::IsDone() const
 {
     return m_isDone.load();
 }
+    
+bool S3FileRequest::IsCancelled() const
+{
+    return m_cancelled;
+}
 
 bool S3FileRequest::CompletedSuccessfully() const
 {

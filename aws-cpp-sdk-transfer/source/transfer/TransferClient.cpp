@@ -100,23 +100,15 @@ std::shared_ptr<UploadFileRequest> TransferClient::UploadFile(const Aws::String&
 
 void TransferClient::UploadFileInternal(std::shared_ptr<UploadFileRequest>& request) 
 {
-
-    uint32_t neededBuffers = request->GetTotalParts();
-
-    uint32_t requestedBuffers = std::min(neededBuffers, m_config.m_uploadBufferCount); // How many will we attempt to acquire from our pool, this will be more configurable soon
-
-    std::shared_ptr< UploadBufferScopedResourceSetType > bufferSet = AcquireUploadBuffers(requestedBuffers);
-
-    if (!bufferSet->GetResources().size())
+    size_t neededBuffers = request->GetTotalParts();
+    
+    // How many will we attempt to acquire from our pool
+    size_t requestedBuffers = std::min(neededBuffers, m_executor->GetPoolSize());
+    
+    for (unsigned int i = 0; i < requestedBuffers; i++)
     {
-        request->CompletionFailure("No buffers available.");
-        // As it stands the AcquireUploadBuffers call should block until at least one buffer is available
-        return;
+        request->AddReadyBuffer(Aws::MakeShared<UploadBuffer>(ALLOCATION_TAG, UPLOAD_BUFFER_SIZE));
     }
-
-    request->SetResourceSet(bufferSet);
-
-    std::for_each(bufferSet->GetResources().begin(), bufferSet->GetResources().end(), [&](const std::shared_ptr<UploadBuffer>& buffer) { request->AddReadyBuffer(buffer); });
 
     request->ContinueUpload();
 }

@@ -236,8 +236,6 @@ bool UploadFileRequest::CreateMultipartUpload()
     {
         createMultipartUploadRequest.SetMetadata(m_metadata);
     }
-
-    std::shared_ptr<Aws::Client::AsyncCallerContext> context = Aws::MakeShared<UploadFileContext>(ALLOCATION_TAG, shared_from_this());
     
     m_executor->Submit(&UploadFileRequest::CreateMultipartUploadHelper, this, createMultipartUploadRequest);
 
@@ -370,51 +368,11 @@ size_t UploadFileRequest::GetCompletedPartCount() const
     return m_completedParts.size();
 }
 
-void UploadFileRequest::SetResourceSet(std::shared_ptr<UploadBufferScopedResourceSetType>& bufferSet)
-{
-    m_resources = bufferSet;
-}
-
-size_t UploadFileRequest::GetResourcesInUse() const
-{
-    if (!m_resources)
-    {
-        return 0;
-    }
-
-    return m_resources->GetResources().size();
-}
-
-void UploadFileRequest::CheckReacquireBuffers()
-{
-    std::lock_guard<std::mutex> resourceLock(m_resourceMutex);
-    if (GetPartsRemaining())
-    {
-        // Assuming we have something left to do let's see if we can increase our pool
-
-        size_t hadResources = GetResourcesInUse();
-
-        // Can we just make this return how many you got back?
-        m_resources->TryReacquire();
-      
-        if (hadResources != GetResourcesInUse())
-        {
-            std::for_each(m_resources->GetResources().begin() + hadResources, m_resources->GetResources().end(), [&](const std::shared_ptr<UploadBuffer>& buffer) {  if (!IsUsingBuffer(buffer)) { AddReadyBuffer(buffer); } });
-            ProcessAvailableBuffers();
-        }
-    }
-}
-
 void UploadFileRequest::SetDone()
 {
     if (IsDone())
     {
         return;
-    }
-    // If we've completed successfully (Rather than cancelled) we know it's ok to go ahead and release the buffers - none of them are outstanding
-    if (CompletedSuccessfully())
-    {
-        ReleaseResources();
     }
     S3FileRequest::SetDone();
 }
@@ -588,7 +546,6 @@ bool UploadFileRequest::RequestPart(uint32_t partId)
     PartRequestRecord& partRequest = partIter->second;
 
     partRequest.m_retries++;
-    std::shared_ptr<Aws::Client::AsyncCallerContext> context = Aws::MakeShared<UploadFileContext>(ALLOCATION_TAG, shared_from_this());
     
     thisLock.unlock();
 
@@ -630,11 +587,9 @@ bool UploadFileRequest::HandleUploadPartOutcome(const Aws::S3::Model::UploadPart
     {
         std::cout << "Uploaded part successfully!" << std::endl;
         AddCompletedPart(partRequest, outcome.GetResult().GetETag());
-        CheckReacquireBuffers();
         return true;
     }
     std::cout << "Failed to upload part" << std::endl;
-    CheckReacquireBuffers();
     HandlePartFailure(outcome, partRequest);
     return false;
 }
@@ -666,13 +621,7 @@ void UploadFileRequest::AddCompletedPart(PartRequestRecord& partRequest, const A
     }
     PartReturned(partRequest);
 }
-
-void UploadFileRequest::ReleaseResources()
-{
-    std::lock_guard<std::mutex> lockGuard(m_resourceMutex);
-    m_resources = nullptr;
-}
-
+    
 void UploadFileRequest::CompleteUpload()
 {
     CompleteMultipartUploadRequest completeRequest;
@@ -687,8 +636,6 @@ void UploadFileRequest::CompleteUpload()
     lockPart.unlock();
 
     completeRequest.WithMultipartUpload(completeUpload);
-
-    std::shared_ptr<Aws::Client::AsyncCallerContext> context = Aws::MakeShared<UploadFileContext>(ALLOCATION_TAG, shared_from_this());
 
     m_executor->Submit(&UploadFileRequest::CompleteMultipartUploadOutcomeHelper, this, completeRequest);
 }
@@ -751,12 +698,6 @@ void UploadFileRequest::PartReturned(PartRequestRecord& partRequest)
 {
     ++m_partsReturned;
     ReusePart(partRequest);
-
-    // Whether we canceled midway or this was our final part it's ok to release the buffers now
-    if (AllPartsReturned())
-    {
-        ReleaseResources();
-    }
 }
 
 uint32_t UploadFileRequest::GetPartsReturned() const
@@ -812,9 +753,17 @@ bool UploadFileRequest::ProcessAvailableBuffers()
 
     std::shared_ptr<UploadBuffer> thisBuffer;
 
-    while (!DoneWithRequests() && GetReadyBuffer(thisBuffer))
+    while (!DoneWithRequests() && !IsCancelled())
     {
-        ProcessBuffer(thisBuffer);
+        if (GetReadyBuffer(thisBuffer))
+        {
+            ProcessBuffer(thisBuffer);
+        }
+        else
+        {
+            // TODO: sleep/wait instead?
+            std::this_thread::yield();
+        }
     }
     return true;
 }
