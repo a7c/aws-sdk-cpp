@@ -585,11 +585,9 @@ bool UploadFileRequest::HandleUploadPartOutcome(const Aws::S3::Model::UploadPart
 
     if (outcome.IsSuccess() && (md5Hex.str() == outcomeETag.str()))
     {
-        std::cout << "Uploaded part successfully!" << std::endl;
         AddCompletedPart(partRequest, outcome.GetResult().GetETag());
         return true;
     }
-    std::cout << "Failed to upload part" << std::endl;
     HandlePartFailure(outcome, partRequest);
     return false;
 }
