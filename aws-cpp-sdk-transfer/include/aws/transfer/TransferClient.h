@@ -69,6 +69,15 @@ class AWS_TRANSFER_API TransferClient
         // Entry point similar to above but with metadata specified
         std::shared_ptr<UploadFileRequest> UploadFile(const Aws::String& fileName, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, const Aws::Map<Aws::String, Aws::String>& metadata, bool createBucket = false, bool doConsistencyChecks = false);
         std::shared_ptr<UploadFileRequest> UploadFile(const Aws::String& fileName, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, Aws::Map<Aws::String, Aws::String>&& metadata, bool createBucket = false, bool doConsistencyChecks = false);
+    
+        /** Same as constructors above but takes in a file stream.
+         *  Preconditions: 
+         *      (1) inputStream must be seekable in both directions.
+         *      (2) A non-empty keyName must be provided. */
+        std::shared_ptr<UploadFileRequest> UploadFile(std::shared_ptr<Aws::IOStream> inputStream, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, bool createBucket = false, bool doConsistencyChecks = false);
+        std::shared_ptr<UploadFileRequest> UploadFile(std::shared_ptr<Aws::IOStream> inputStream, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, const Aws::Map<Aws::String, Aws::String>& metadata, bool createBucket = false, bool doConsistencyChecks = false);
+        std::shared_ptr<UploadFileRequest> UploadFile(std::shared_ptr<Aws::IOStream> inputStream, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, Aws::Map<Aws::String, Aws::String>&& metadata, bool createBucket = false, bool doConsistencyChecks = false);
+        // TODO: add constructors with metadata
 
         // User requested upload cancels should go through here
         void CancelUpload(std::shared_ptr<UploadFileRequest>& fileRequest) const;

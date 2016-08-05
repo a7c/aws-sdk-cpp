@@ -71,7 +71,7 @@ static const char* BIG_FILE_KEY = "BigFileKey";
 
 static const char* CANCEL_TEST_FILE_NAME = "CancelTestFile.txt";
 static const char* CANCEL_FILE_KEY = "CancelFileKey";
-//static const char* CANCEL_FILE_KEY2 = "CancelFileKey2";
+static const char* CANCEL_FILE_KEY2 = "CancelFileKey2";
 
 static const char* TEST_BUCKET_NAME_BASE = "transferintegrationtestbucket";
 static const unsigned SMALL_TEST_SIZE = MB5_BUFFER_SIZE / 2;
@@ -1324,5 +1324,106 @@ TEST_F(TransferTests, MultipartUploadWithMetadataTest)
     ASSERT_EQ(metadata["key1"], headObjectMetadata["key1"]);
     ASSERT_EQ(metadata["key2"], headObjectMetadata["key2"]);
 }
+    
+// Similar to SmallTest, but passes in a string stream for upload instead of a file name
+TEST_F(TransferTests, StreamSmallTest)
+{
+    if (EmptyBucket(GetTestBucketName()))
+    {
+        WaitForBucketToEmpty(GetTestBucketName());
+    }
+    
+    GetObjectRequest getObjectRequest;
+    getObjectRequest.SetBucket(GetTestBucketName());
+    getObjectRequest.SetKey(SMALL_FILE_KEY);
+    
+    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
+    EXPECT_FALSE(getObjectOutcome.IsSuccess());
+    
+    ListMultipartUploadsRequest listMultipartRequest;
+    listMultipartRequest.SetBucket(GetTestBucketName());
+    
+    Aws::IFStream ifstream;
+    ifstream.open(SMALL_TEST_FILE_NAME);
+    ASSERT_TRUE(ifstream.is_open());
+    
+    auto sstream = Aws::MakeShared<Aws::StringStream>(ALLOCATION_TAG);
+    *sstream << ifstream.rdbuf();
+    ifstream.close();
+    
+    const bool cCreateBucket = false;
+    const bool cConsistencyChecks = false;
+    // Not creating the bucket.. it should be there
+    // No consistency checks on this one, just verifying that it seems to complete
+    std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(sstream, GetTestBucketName(), SMALL_FILE_KEY, "", cCreateBucket, cConsistencyChecks);
+    
+    ASSERT_EQ(requestPtr->GetTotalParts(), 1u); // Should be about 2.5 megs
+    
+    ASSERT_FALSE(requestPtr->IsDone());
+    
+    WaitForUploadAndUpdate(requestPtr, 100.0f);
+    
+    ASSERT_TRUE(requestPtr->IsDone());
+    
+    uint64_t fileSize = requestPtr->GetFileSize();
+    ASSERT_TRUE(fileSize == (SMALL_TEST_SIZE / testStrLen * testStrLen));
+    
+    ASSERT_TRUE(requestPtr->CompletedSuccessfully());
+}
+    
+// Small version of single-part upload with metadata test that passes in a stream instead of a file
+TEST_F(TransferTests, StreamSinglePartUploadWithMetadataTest)
+{
+    if (EmptyBucket(GetTestBucketName()))
+    {
+        WaitForBucketToEmpty(GetTestBucketName());
+    }
+    GetObjectRequest getObjectRequest;
+    getObjectRequest.SetBucket(GetTestBucketName());
+    getObjectRequest.SetKey(SMALL_TEST_FILE_NAME);
+    
+    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
+    EXPECT_FALSE(getObjectOutcome.IsSuccess());
+    
+    Aws::IFStream ifstream;
+    ifstream.open(SMALL_TEST_FILE_NAME);
+    ASSERT_TRUE(ifstream.is_open());
+    
+    auto sstream = Aws::MakeShared<Aws::StringStream>(ALLOCATION_TAG);
+    *sstream << ifstream.rdbuf();
+    ifstream.close();
+    
+    Aws::Map<Aws::String, Aws::String> metadata;
+    metadata["key1"] = "val1";
+    metadata["key2"] = "val2";
+    const bool cCreateBucket = false;
+    const bool cConsistencyChecks = false;
+    std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(sstream, GetTestBucketName(), SMALL_TEST_FILE_NAME, "", metadata, cCreateBucket, cConsistencyChecks);
+    
+    ASSERT_FALSE(requestPtr->IsDone());
+    
+    WaitForUploadAndUpdate(requestPtr, 100.0f);
+    
+    ASSERT_TRUE(requestPtr->IsDone());
+    
+    ASSERT_TRUE(requestPtr->CompletedSuccessfully());
+    
+    WaitForObjectToPropagate(GetTestBucketName(), SMALL_TEST_FILE_NAME);
+    
+    // Check the metadata matches
+    HeadObjectRequest headObjectRequest;
+    headObjectRequest.SetBucket(GetTestBucketName());
+    headObjectRequest.SetKey(SMALL_TEST_FILE_NAME);
+    
+    HeadObjectOutcome headObjectOutcome = m_s3Client->HeadObject(headObjectRequest);
+    ASSERT_TRUE(headObjectOutcome.IsSuccess());
+    
+    Aws::Map<Aws::String, Aws::String> headObjectMetadata = headObjectOutcome.GetResult().GetMetadata();
+    ASSERT_EQ(metadata.size(), headObjectMetadata.size());
+    ASSERT_EQ(metadata["key1"], headObjectMetadata["key1"]);
+    ASSERT_EQ(metadata["key2"], headObjectMetadata["key2"]);
+    
+}
+
 
 }

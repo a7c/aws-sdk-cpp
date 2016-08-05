@@ -51,10 +51,10 @@ static const uint32_t PART_RETRY_MAX = 2; // How many failures on a single part 
 
 static const uint32_t CONSISTENCY_RETRY_MAX = 20; // If we're checking for consistency in S3 we may need to perform HeadObject, GetObject, and ListObjects checks several times to ensure the object has propagated
 
-UploadFileRequest::UploadFileRequest(const Aws::String& fileName, 
-                                     const Aws::String& bucketName, 
-                                     const Aws::String& keyName, 
-                                     const Aws::String& contentType, 
+UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
                                      Aws::Map<Aws::String, Aws::String>&& metadata,
                                      const std::shared_ptr<Aws::S3::S3Client>& s3Client,
                                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
@@ -74,7 +74,6 @@ m_headBucketPending(false),
 m_completeMultipartUploadPending(false),
 m_bucketPropagated(false),
 m_totalParts(0),
-m_fileStream(fileName.c_str(), std::ios::binary | std::ios::ate),
 m_contentType(contentType),
 m_metadata(std::move(metadata)),
 m_createMultipartRetries(0),
@@ -91,36 +90,16 @@ m_getObjectRetries(0),
 m_listObjectsRetries(0),
 m_headBucketRetries(0)
 {
-    if (m_fileStream.good() && m_fileStream.is_open())
+    if (fileName != "")
     {
-        SetFileSize(static_cast<uint64_t>(m_fileStream.tellg()));
-        m_bytesRemaining = GetFileSize();
-        m_fileStream.seekg(0);
+        m_inputStream = Aws::MakeShared<Aws::FStream>(ALLOCATION_TAG, fileName.c_str(), std::ios::in | std::ios::binary | std::ios::ate);
     }
-    else
+    if (m_inputStream != nullptr)
     {
-        CompletionFailure("Failed to open file.");
-        return;
-    }
-   
-    if (GetFileSize())
-    {
-        m_totalParts = 1 + static_cast<uint32_t>((GetFileSize() - 1) / MB5_BUFFER_SIZE); // How many total buffer operations are we performing
+        Init();
     }
 }
-
-UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
-                                     const Aws::String& bucketName,
-                                     const Aws::String& keyName,
-                                     const Aws::String& contentType,
-                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
-                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
-                                     bool createBucket,
-                                     bool doConsistencyChecks) :
-UploadFileRequest(fileName, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>{}, s3Client, executor, createBucket, doConsistencyChecks)
-{
-}
-
+    
 UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
                                      const Aws::String& bucketName,
                                      const Aws::String& keyName,
@@ -133,14 +112,103 @@ UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
 UploadFileRequest(fileName, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>(metadata), s3Client, executor, createBucket, doConsistencyChecks)
 {
 }
+    
+UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                                     bool createBucket,
+                                     bool doConsistencyChecks) :
+UploadFileRequest(fileName, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>{}, s3Client, executor, createBucket, doConsistencyChecks)
+{
+}
+    
+UploadFileRequest::UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
+                                     Aws::Map<Aws::String, Aws::String>&& metadata,
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                                     bool createBucket,
+                                     bool doConsistencyChecks) :
+UploadFileRequest("", bucketName, keyName, contentType, metadata, s3Client, executor, createBucket, doConsistencyChecks)
+{
+    m_inputStream = fileStream;
+    Init();
+}
+    
+UploadFileRequest::UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
+                                     const Aws::Map<Aws::String, Aws::String>& metadata,
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                                     bool createBucket,
+                                     bool doConsistencyChecks) :
+UploadFileRequest(fileStream, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>(metadata), s3Client, executor, createBucket, doConsistencyChecks)
+{
+}
+    
+UploadFileRequest::UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                                     bool createBucket,
+                                     bool doConsistencyChecks) :
+UploadFileRequest(fileStream, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>{}, s3Client, executor, createBucket, doConsistencyChecks)
+{
+}
 
 UploadFileRequest::~UploadFileRequest()
 {
     m_executor->WaitForCompletion();
-    m_fileStream.close();
+    if (auto fileStream = std::dynamic_pointer_cast<Aws::FStream>(m_inputStream))
+    {
+        fileStream->close();
+    }
 }
-
-bool UploadFileRequest::CreateBucket()
+    
+/* Check input stream, find file/stream size, and calculate total parts */
+void UploadFileRequest::Init()
+{
+    if (m_inputStream->good())
+    {
+        // If input stream is a file stream, make sure it's open
+        if (auto fileStream = std::dynamic_pointer_cast<Aws::FStream>(m_inputStream))
+        {
+            if (!fileStream->is_open())
+            {
+                std::cout << "fail" << std::endl;
+                CompletionFailure("Failed to open file.");
+                return;
+            }
+        }
+        
+        m_inputStream->seekg(0, std::ios_base::end);
+        SetFileSize(static_cast<uint64_t>(m_inputStream->tellg()));
+        m_bytesRemaining = GetFileSize();
+        m_inputStream->seekg(0);
+    }
+    else
+    {
+        std::cout << "BAD" << std::endl;
+        CompletionFailure("Failed to open file.");
+        return;
+    }
+    
+    if (GetFileSize())
+    {
+        m_totalParts = 1 + static_cast<uint32_t>((GetFileSize() - 1) / MB5_BUFFER_SIZE); // How many total buffer operations are we performing
+    }
+}
+    
+    bool UploadFileRequest::CreateBucket()
 {
     if (m_bucketCreated.load())
     {
@@ -463,7 +531,7 @@ uint64_t UploadFileRequest::ReadNextPart(const std::shared_ptr<UploadBuffer>& bu
         ++m_partCount;
 
         partNum = GetPartCount();
-        bytesRead = static_cast<int64_t>(m_fileStream.read((char*)(buffer->GetUnderlyingData()), std::min(m_bytesRemaining, static_cast<uint64_t>(buffer->GetLength()))).gcount()); // This probably isn't necessary.. look at simplifying this
+        bytesRead = static_cast<int64_t>(m_inputStream->read((char*)(buffer->GetUnderlyingData()), std::min(m_bytesRemaining, static_cast<uint64_t>(buffer->GetLength()))).gcount()); // This probably isn't necessary.. look at simplifying this
 
         if (bytesRead > m_bytesRemaining)
         {

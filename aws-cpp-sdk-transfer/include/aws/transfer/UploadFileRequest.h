@@ -103,6 +103,32 @@ public:
                       const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                       bool createBucket,
                       bool doConsistencyChecks);
+    UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+                      const Aws::String& bucketName,
+                      const Aws::String& keyName,
+                      const Aws::String& contentType,
+                      Aws::Map<Aws::String, Aws::String>&& metadata,
+                      const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                      bool createBucket,
+                      bool doConsistencyChecks);
+    UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+                      const Aws::String& bucketName,
+                      const Aws::String& keyName,
+                      const Aws::String& contentType,
+                      const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                      bool createBucket,
+                      bool doConsistencyChecks);
+    UploadFileRequest(std::shared_ptr<Aws::IOStream> inputStream,
+                      const Aws::String& bucketName,
+                      const Aws::String& keyName,
+                      const Aws::String& contentType,
+                      const Aws::Map<Aws::String, Aws::String>& metadata,
+                      const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                      bool createBucket,
+                      bool doConsistencyChecks);
     virtual ~UploadFileRequest();
 
     // How many parts have we at least begun to upload
@@ -153,6 +179,8 @@ protected:
     virtual bool DoCancelAction() override;
     virtual void SetDone() override;
 private:
+    void Init();
+    
     // TransferClient uses these calls
     bool ProcessBuffer(const std::shared_ptr<UploadBuffer>& buffer);
  
@@ -266,7 +294,7 @@ private:
 
     uint32_t m_totalParts;
 
-    Aws::IFStream m_fileStream;
+    std::shared_ptr<Aws::IOStream> m_inputStream;
 
     Aws::Map<uint32_t, Aws::S3::Model::CompletedPart> m_completedParts;
     Aws::Map<uint32_t, PartRequestRecord> m_pendingParts;
