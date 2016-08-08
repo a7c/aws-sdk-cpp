@@ -50,6 +50,9 @@ using namespace Aws::Utils;
 
 static const char* TEST_FILE_NAME = "TransferTestFile.txt"; // Also used as key
 
+static const char* EMPTY_TEST_FILE_NAME = "EmptyTransferTestFile.txt";
+static const char* EMPTY_FILE_KEY = "EmptyFileKey";
+
 static const char* SMALL_TEST_FILE_NAME = "SmallTransferTestFile.txt";
 static const char* SMALL_FILE_KEY = "SmallFileKey";
 
@@ -71,9 +74,10 @@ static const char* BIG_FILE_KEY = "BigFileKey";
 
 static const char* CANCEL_TEST_FILE_NAME = "CancelTestFile.txt";
 static const char* CANCEL_FILE_KEY = "CancelFileKey";
-static const char* CANCEL_FILE_KEY2 = "CancelFileKey2";
+//static const char* CANCEL_FILE_KEY2 = "CancelFileKey2";
 
 static const char* TEST_BUCKET_NAME_BASE = "transferintegrationtestbucket";
+static const unsigned EMPTY_TEST_SIZE = 0;
 static const unsigned SMALL_TEST_SIZE = MB5_BUFFER_SIZE / 2;
 static const unsigned MEDIUM_TEST_SIZE = MB5_BUFFER_SIZE * 3 / 2;
 
@@ -100,6 +104,7 @@ public:
     static std::shared_ptr<TransferClient> m_transferClient;
 
     static Aws::String m_testFileName;
+    static Aws::String m_emptyTestFileName;
     static Aws::String m_smallTestFileName;
     static Aws::String m_bigTestFileName;
     static Aws::String m_mediumTestFileName;
@@ -256,6 +261,7 @@ protected:
         DeleteBucket(GetTestBucketName());
 
 	    m_testFileName = MakeFilePath( TEST_FILE_NAME );
+        m_emptyTestFileName = MakeFilePath ( EMPTY_TEST_FILE_NAME );
         m_smallTestFileName = MakeFilePath( SMALL_TEST_FILE_NAME );
         m_bigTestFileName = MakeFilePath( BIG_TEST_FILE_NAME );
         m_mediumTestFileName = MakeFilePath( MEDIUM_TEST_FILE_NAME );
@@ -264,6 +270,7 @@ protected:
         m_multiPartContentFile = MakeFilePath( MULTI_PART_CONTENT_FILE );
 
         CreateTestFile(m_testFileName, MB5_BUFFER_SIZE, testString);
+        CreateTestFile(m_emptyTestFileName, EMPTY_TEST_SIZE, testString);
         CreateTestFile(m_smallTestFileName, SMALL_TEST_SIZE, testString);
         CreateTestFile(m_bigTestFileName, BIG_TEST_SIZE, testString);
         CreateTestFile(m_mediumTestFileName, MEDIUM_TEST_SIZE, testString);
@@ -485,6 +492,7 @@ protected:
         AbortMultiPartUpload(GetTestBucketName(), BIG_FILE_KEY);
         DeleteBucket(GetTestBucketName());
         Aws::FileSystem::RemoveFileIfExists(m_testFileName.c_str());
+        Aws::FileSystem::RemoveFileIfExists(m_emptyTestFileName.c_str());
         Aws::FileSystem::RemoveFileIfExists(m_smallTestFileName.c_str());
         Aws::FileSystem::RemoveFileIfExists(m_contentTestFileName.c_str());
         Aws::FileSystem::RemoveFileIfExists(m_bigTestFileName.c_str());
@@ -527,6 +535,7 @@ std::shared_ptr<S3Client> TransferTests::m_s3Client(nullptr);
 std::shared_ptr<TransferClient> TransferTests::m_transferClient(nullptr);
 
 Aws::String TransferTests::m_testFileName;
+Aws::String TransferTests::m_emptyTestFileName;
 Aws::String TransferTests::m_smallTestFileName;
 Aws::String TransferTests::m_bigTestFileName;
 Aws::String TransferTests::m_mediumTestFileName;
@@ -572,6 +581,42 @@ TEST_F(TransferTests, SinglePartUploadTest)
 
     ASSERT_TRUE(CheckListObjectsValidation(requestPtr));
 }
+    
+// Make sure uploading an empty file works too
+TEST_F(TransferTests, EmptyUploadTest)
+{
+    if (EmptyBucket(GetTestBucketName()))
+    {
+        WaitForBucketToEmpty(GetTestBucketName());
+    }
+    GetObjectRequest getObjectRequest;
+    getObjectRequest.SetBucket(GetTestBucketName());
+    getObjectRequest.SetKey(EMPTY_FILE_KEY);
+    
+    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
+    EXPECT_FALSE(getObjectOutcome.IsSuccess());
+    
+    const bool cCreateBucket = false;
+    const bool cConsistencyChecks = false;
+    // Test with default behavior of using file name as key
+    std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(m_emptyTestFileName, GetTestBucketName(), EMPTY_FILE_KEY, "", cCreateBucket, cConsistencyChecks);
+    
+    ASSERT_EQ(requestPtr->GetTotalParts(), 1u);
+    
+    WaitForUploadAndUpdate(requestPtr, 100.0f);
+    
+    ASSERT_TRUE(requestPtr->IsDone());
+    
+    ASSERT_TRUE(requestPtr->CompletedSuccessfully());
+    
+    uint64_t fileSize = requestPtr->GetFileSize();
+    ASSERT_TRUE(fileSize == EMPTY_TEST_SIZE);
+    
+    WaitForObjectToPropagate(GetTestBucketName(), EMPTY_TEST_FILE_NAME);
+    
+    ASSERT_TRUE(CheckListObjectsValidation(requestPtr));
+}
+
 
 // Half size file - similar to our 5 meg test, let's make sure we're processing < 1 part files correctly
 TEST_F(TransferTests, SmallTest)

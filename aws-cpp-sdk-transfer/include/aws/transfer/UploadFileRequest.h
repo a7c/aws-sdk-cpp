@@ -103,7 +103,7 @@ public:
                       const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                       bool createBucket,
                       bool doConsistencyChecks);
-    UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+    UploadFileRequest(const std::shared_ptr<Aws::IOStream>& fileStream,
                       const Aws::String& bucketName,
                       const Aws::String& keyName,
                       const Aws::String& contentType,
@@ -112,7 +112,7 @@ public:
                       const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                       bool createBucket,
                       bool doConsistencyChecks);
-    UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+    UploadFileRequest(const std::shared_ptr<Aws::IOStream>& fileStream,
                       const Aws::String& bucketName,
                       const Aws::String& keyName,
                       const Aws::String& contentType,
@@ -120,7 +120,7 @@ public:
                       const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                       bool createBucket,
                       bool doConsistencyChecks);
-    UploadFileRequest(std::shared_ptr<Aws::IOStream> inputStream,
+    UploadFileRequest(const std::shared_ptr<Aws::IOStream>& inputStream,
                       const Aws::String& bucketName,
                       const Aws::String& keyName,
                       const Aws::String& contentType,
@@ -175,11 +175,22 @@ public:
     friend class TransferClient;
 
 protected:
-
     virtual bool DoCancelAction() override;
     virtual void SetDone() override;
 private:
-    void Init();
+    /** Internal constructor that all the public ones delegate to.
+     *  The useStream determines whether the file or stream will be used; the other is ignored. */
+    UploadFileRequest(const Aws::String& fileName,
+                      const std::shared_ptr<Aws::IOStream>& fileStream,
+                      const Aws::String& bucketName,
+                      const Aws::String& keyName,
+                      const Aws::String& contentType,
+                      Aws::Map<Aws::String, Aws::String>&& metadata,
+                      const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                      bool createBucket,
+                      bool doConsistencyChecks,
+                      bool useStream);
     
     // TransferClient uses these calls
     bool ProcessBuffer(const std::shared_ptr<UploadBuffer>& buffer);
@@ -309,6 +320,8 @@ private:
     uint32_t m_completeRetries;
     uint32_t m_singleRetry;
     bool m_doConsistencyChecks;
+    
+    bool m_isEmptyFile = false;
 
     // S3 propagation checks to optionally check for consistency before returning "done"
     std::atomic<bool> m_sentConsistencyChecks;

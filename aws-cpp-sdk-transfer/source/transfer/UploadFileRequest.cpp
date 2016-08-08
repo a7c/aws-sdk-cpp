@@ -52,6 +52,7 @@ static const uint32_t PART_RETRY_MAX = 2; // How many failures on a single part 
 static const uint32_t CONSISTENCY_RETRY_MAX = 20; // If we're checking for consistency in S3 we may need to perform HeadObject, GetObject, and ListObjects checks several times to ensure the object has propagated
 
 UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
+                                     const std::shared_ptr<Aws::IOStream>& fileStream,
                                      const Aws::String& bucketName,
                                      const Aws::String& keyName,
                                      const Aws::String& contentType,
@@ -59,7 +60,8 @@ UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
                                      const std::shared_ptr<Aws::S3::S3Client>& s3Client,
                                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                                      bool createBucket,
-                                     bool doConsistencyChecks) :
+                                     bool doConsistencyChecks,
+                                     bool useStream) :
 S3FileRequest(fileName, bucketName, keyName, s3Client),
 m_executor(executor),
 m_bytesRemaining(0),
@@ -90,16 +92,64 @@ m_getObjectRetries(0),
 m_listObjectsRetries(0),
 m_headBucketRetries(0)
 {
-    if (fileName != "")
+    if (useStream)
+    {
+        m_inputStream = fileStream;
+    }
+    else
     {
         m_inputStream = Aws::MakeShared<Aws::FStream>(ALLOCATION_TAG, fileName.c_str(), std::ios::in | std::ios::binary | std::ios::ate);
     }
-    if (m_inputStream != nullptr)
+    
+    if (m_inputStream->good())
     {
-        Init();
+        // If input stream is a file stream, make sure it's open
+        if (auto fileStream = std::dynamic_pointer_cast<Aws::FStream>(m_inputStream))
+        {
+            if (!fileStream->is_open())
+            {
+                CompletionFailure("Failed to open file.");
+                return;
+            }
+        }
+        
+        m_inputStream->seekg(0, std::ios_base::end);
+        SetFileSize(static_cast<uint64_t>(m_inputStream->tellg()));
+        m_bytesRemaining = GetFileSize();
+        m_inputStream->seekg(0);
+    }
+    else
+    {
+        CompletionFailure("Failed to open file.");
+        return;
+    }
+    
+    if (GetFileSize())
+    {
+        m_totalParts = 1 + static_cast<uint32_t>((GetFileSize() - 1) / MB5_BUFFER_SIZE); // How many total buffer operations are we performing
+    }
+    else
+    {
+        m_totalParts = 1;
+        m_isEmptyFile = true;
     }
 }
     
+UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
+                                     Aws::Map<Aws::String, Aws::String>&& metadata,
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                                     bool createBucket,
+                                     bool doConsistencyChecks) :
+UploadFileRequest(fileName, nullptr, bucketName, keyName, contentType, std::move(metadata), s3Client, executor, createBucket, doConsistencyChecks, false)
+{
+    
+}
+    
+
 UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
                                      const Aws::String& bucketName,
                                      const Aws::String& keyName,
@@ -125,7 +175,7 @@ UploadFileRequest(fileName, bucketName, keyName, contentType, Aws::Map<Aws::Stri
 {
 }
     
-UploadFileRequest::UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+UploadFileRequest::UploadFileRequest(const std::shared_ptr<Aws::IOStream>& fileStream,
                                      const Aws::String& bucketName,
                                      const Aws::String& keyName,
                                      const Aws::String& contentType,
@@ -134,13 +184,11 @@ UploadFileRequest::UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
                                      const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                                      bool createBucket,
                                      bool doConsistencyChecks) :
-UploadFileRequest("", bucketName, keyName, contentType, metadata, s3Client, executor, createBucket, doConsistencyChecks)
+UploadFileRequest("", fileStream, bucketName, keyName, contentType, std::move(metadata), s3Client, executor, createBucket, doConsistencyChecks, true)
 {
-    m_inputStream = fileStream;
-    Init();
 }
     
-UploadFileRequest::UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+UploadFileRequest::UploadFileRequest(const std::shared_ptr<Aws::IOStream>& fileStream,
                                      const Aws::String& bucketName,
                                      const Aws::String& keyName,
                                      const Aws::String& contentType,
@@ -153,7 +201,7 @@ UploadFileRequest(fileStream, bucketName, keyName, contentType, Aws::Map<Aws::St
 {
 }
     
-UploadFileRequest::UploadFileRequest(std::shared_ptr<Aws::IOStream> fileStream,
+UploadFileRequest::UploadFileRequest(const std::shared_ptr<Aws::IOStream>& fileStream,
                                      const Aws::String& bucketName,
                                      const Aws::String& keyName,
                                      const Aws::String& contentType,
@@ -174,41 +222,7 @@ UploadFileRequest::~UploadFileRequest()
     }
 }
     
-/* Check input stream, find file/stream size, and calculate total parts */
-void UploadFileRequest::Init()
-{
-    if (m_inputStream->good())
-    {
-        // If input stream is a file stream, make sure it's open
-        if (auto fileStream = std::dynamic_pointer_cast<Aws::FStream>(m_inputStream))
-        {
-            if (!fileStream->is_open())
-            {
-                std::cout << "fail" << std::endl;
-                CompletionFailure("Failed to open file.");
-                return;
-            }
-        }
-        
-        m_inputStream->seekg(0, std::ios_base::end);
-        SetFileSize(static_cast<uint64_t>(m_inputStream->tellg()));
-        m_bytesRemaining = GetFileSize();
-        m_inputStream->seekg(0);
-    }
-    else
-    {
-        std::cout << "BAD" << std::endl;
-        CompletionFailure("Failed to open file.");
-        return;
-    }
-    
-    if (GetFileSize())
-    {
-        m_totalParts = 1 + static_cast<uint32_t>((GetFileSize() - 1) / MB5_BUFFER_SIZE); // How many total buffer operations are we performing
-    }
-}
-    
-    bool UploadFileRequest::CreateBucket()
+bool UploadFileRequest::CreateBucket()
 {
     if (m_bucketCreated.load())
     {
@@ -568,7 +582,7 @@ bool UploadFileRequest::ProcessBuffer(const std::shared_ptr<UploadBuffer>& buffe
     uint32_t partNum = 0;
     uint64_t bytesRead = ReadNextPart(buffer, streamBuf, partNum);
 
-    if (!bytesRead)
+    if (!bytesRead && !m_isEmptyFile)
     {
         return false;
     }
