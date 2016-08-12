@@ -51,15 +51,19 @@ static const uint32_t PART_RETRY_MAX = 2; // How many failures on a single part 
 
 static const uint32_t CONSISTENCY_RETRY_MAX = 20; // If we're checking for consistency in S3 we may need to perform HeadObject, GetObject, and ListObjects checks several times to ensure the object has propagated
 
-UploadFileRequest::UploadFileRequest(const Aws::String& fileName, 
-                                     const Aws::String& bucketName, 
-                                     const Aws::String& keyName, 
-                                     const Aws::String& contentType, 
+UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
+                                     const std::shared_ptr<Aws::IOStream>& fileStream,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
                                      Aws::Map<Aws::String, Aws::String>&& metadata,
-                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client, 
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                                      bool createBucket,
-                                     bool doConsistencyChecks) :
+                                     bool doConsistencyChecks,
+                                     bool useStream) :
 S3FileRequest(fileName, bucketName, keyName, s3Client),
+m_executor(executor),
 m_bytesRemaining(0),
 m_partCount(0),
 m_partsReturned(0),
@@ -72,7 +76,6 @@ m_headBucketPending(false),
 m_completeMultipartUploadPending(false),
 m_bucketPropagated(false),
 m_totalParts(0),
-m_fileStream(fileName.c_str(), std::ios::binary | std::ios::ate),
 m_contentType(contentType),
 m_metadata(std::move(metadata)),
 m_createMultipartRetries(0),
@@ -89,34 +92,63 @@ m_getObjectRetries(0),
 m_listObjectsRetries(0),
 m_headBucketRetries(0)
 {
-    if (m_fileStream.good() && m_fileStream.is_open())
+    if (useStream)
     {
-        SetFileSize(static_cast<uint64_t>(m_fileStream.tellg()));
+        m_inputStream = fileStream;
+    }
+    else
+    {
+        m_inputStream = Aws::MakeShared<Aws::FStream>(ALLOCATION_TAG, fileName.c_str(), std::ios::in | std::ios::binary | std::ios::ate);
+    }
+    
+    if (m_inputStream->good())
+    {
+        // If input stream is a file stream, make sure it's open
+        if (auto fileStream = std::dynamic_pointer_cast<Aws::FStream>(m_inputStream))
+        {
+            if (!fileStream->is_open())
+            {
+                CompletionFailure("Failed to open file.");
+                return;
+            }
+        }
+        
+        m_inputStream->seekg(0, std::ios_base::end);
+        SetFileSize(static_cast<uint64_t>(m_inputStream->tellg()));
         m_bytesRemaining = GetFileSize();
-        m_fileStream.seekg(0);
+        m_inputStream->seekg(0);
     }
     else
     {
         CompletionFailure("Failed to open file.");
         return;
     }
-   
+    
     if (GetFileSize())
     {
         m_totalParts = 1 + static_cast<uint32_t>((GetFileSize() - 1) / MB5_BUFFER_SIZE); // How many total buffer operations are we performing
     }
+    else
+    {
+        m_totalParts = 1;
+        m_isEmptyFile = true;
+    }
 }
-
+    
 UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
                                      const Aws::String& bucketName,
                                      const Aws::String& keyName,
                                      const Aws::String& contentType,
+                                     Aws::Map<Aws::String, Aws::String>&& metadata,
                                      const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                                      bool createBucket,
                                      bool doConsistencyChecks) :
-UploadFileRequest(fileName, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>{}, s3Client, createBucket, doConsistencyChecks)
+UploadFileRequest(fileName, nullptr, bucketName, keyName, contentType, std::move(metadata), s3Client, executor, createBucket, doConsistencyChecks, false)
 {
+    
 }
+    
 
 UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
                                      const Aws::String& bucketName,
@@ -124,17 +156,72 @@ UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
                                      const Aws::String& contentType,
                                      const Aws::Map<Aws::String, Aws::String>& metadata,
                                      const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
                                      bool createBucket,
                                      bool doConsistencyChecks) :
-UploadFileRequest(fileName, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>(metadata), s3Client, createBucket, doConsistencyChecks)
+UploadFileRequest(fileName, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>(metadata), s3Client, executor, createBucket, doConsistencyChecks)
+{
+}
+    
+UploadFileRequest::UploadFileRequest(const Aws::String& fileName,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                                     bool createBucket,
+                                     bool doConsistencyChecks) :
+UploadFileRequest(fileName, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>{}, s3Client, executor, createBucket, doConsistencyChecks)
+{
+}
+    
+UploadFileRequest::UploadFileRequest(const std::shared_ptr<Aws::IOStream>& fileStream,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
+                                     Aws::Map<Aws::String, Aws::String>&& metadata,
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                                     bool createBucket,
+                                     bool doConsistencyChecks) :
+UploadFileRequest("", fileStream, bucketName, keyName, contentType, std::move(metadata), s3Client, executor, createBucket, doConsistencyChecks, true)
+{
+}
+    
+UploadFileRequest::UploadFileRequest(const std::shared_ptr<Aws::IOStream>& fileStream,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
+                                     const Aws::Map<Aws::String, Aws::String>& metadata,
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                                     bool createBucket,
+                                     bool doConsistencyChecks) :
+UploadFileRequest(fileStream, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>(metadata), s3Client, executor, createBucket, doConsistencyChecks)
+{
+}
+    
+UploadFileRequest::UploadFileRequest(const std::shared_ptr<Aws::IOStream>& fileStream,
+                                     const Aws::String& bucketName,
+                                     const Aws::String& keyName,
+                                     const Aws::String& contentType,
+                                     const std::shared_ptr<Aws::S3::S3Client>& s3Client,
+                                     const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor,
+                                     bool createBucket,
+                                     bool doConsistencyChecks) :
+UploadFileRequest(fileStream, bucketName, keyName, contentType, Aws::Map<Aws::String, Aws::String>{}, s3Client, executor, createBucket, doConsistencyChecks)
 {
 }
 
 UploadFileRequest::~UploadFileRequest()
 {
-    m_fileStream.close();
+    m_executor->WaitForCompletion();
+    if (auto fileStream = std::dynamic_pointer_cast<Aws::FStream>(m_inputStream))
+    {
+        fileStream->close();
+    }
 }
-
+    
 bool UploadFileRequest::CreateBucket()
 {
     if (m_bucketCreated.load())
@@ -231,12 +318,16 @@ bool UploadFileRequest::CreateMultipartUpload()
     {
         createMultipartUploadRequest.SetMetadata(m_metadata);
     }
-
-    std::shared_ptr<Aws::Client::AsyncCallerContext> context = Aws::MakeShared<UploadFileContext>(ALLOCATION_TAG, shared_from_this());
-
-    GetS3Client()->CreateMultipartUploadAsync(createMultipartUploadRequest,&TransferClient::OnCreateMultipartUpload, context);
+    
+    m_executor->Submit(&UploadFileRequest::CreateMultipartUploadHelper, this, createMultipartUploadRequest);
 
     return true;
+}
+    
+void UploadFileRequest::CreateMultipartUploadHelper(const Aws::S3::Model::CreateMultipartUploadRequest& request)
+{
+    auto outcome = GetS3Client()->CreateMultipartUpload(request);
+    HandleCreateMultipartUploadOutcome(request, outcome);
 }
 
 bool UploadFileRequest::HandleCreateMultipartUploadOutcome(const Aws::S3::Model::CreateMultipartUploadRequest& request, const Aws::S3::Model::CreateMultipartUploadOutcome& outcome)
@@ -359,51 +450,11 @@ size_t UploadFileRequest::GetCompletedPartCount() const
     return m_completedParts.size();
 }
 
-void UploadFileRequest::SetResourceSet(std::shared_ptr<UploadBufferScopedResourceSetType>& bufferSet)
-{
-    m_resources = bufferSet;
-}
-
-size_t UploadFileRequest::GetResourcesInUse() const
-{
-    if (!m_resources)
-    {
-        return 0;
-    }
-
-    return m_resources->GetResources().size();
-}
-
-void UploadFileRequest::CheckReacquireBuffers()
-{
-    std::lock_guard<std::mutex> resourceLock(m_resourceMutex);
-    if (GetPartsRemaining())
-    {
-        // Assuming we have something left to do let's see if we can increase our pool
-
-        size_t hadResources = GetResourcesInUse();
-
-        // Can we just make this return how many you got back?
-        m_resources->TryReacquire();
-      
-        if (hadResources != GetResourcesInUse())
-        {
-            std::for_each(m_resources->GetResources().begin() + hadResources, m_resources->GetResources().end(), [&](const std::shared_ptr<UploadBuffer>& buffer) {  if (!IsUsingBuffer(buffer)) { AddReadyBuffer(buffer); } });
-            ProcessAvailableBuffers();
-        }
-    }
-}
-
 void UploadFileRequest::SetDone()
 {
     if (IsDone())
     {
         return;
-    }
-    // If we've completed successfully (Rather than cancelled) we know it's ok to go ahead and release the buffers - none of them are outstanding
-    if (CompletedSuccessfully())
-    {
-        ReleaseResources();
     }
     S3FileRequest::SetDone();
 }
@@ -494,7 +545,7 @@ uint64_t UploadFileRequest::ReadNextPart(const std::shared_ptr<UploadBuffer>& bu
         ++m_partCount;
 
         partNum = GetPartCount();
-        bytesRead = static_cast<int64_t>(m_fileStream.read((char*)(buffer->GetUnderlyingData()), std::min(m_bytesRemaining, static_cast<uint64_t>(buffer->GetLength()))).gcount()); // This probably isn't necessary.. look at simplifying this
+        bytesRead = static_cast<int64_t>(m_inputStream->read((char*)(buffer->GetUnderlyingData()), std::min(m_bytesRemaining, static_cast<uint64_t>(buffer->GetLength()))).gcount()); // This probably isn't necessary.. look at simplifying this
 
         if (bytesRead > m_bytesRemaining)
         {
@@ -531,7 +582,7 @@ bool UploadFileRequest::ProcessBuffer(const std::shared_ptr<UploadBuffer>& buffe
     uint32_t partNum = 0;
     uint64_t bytesRead = ReadNextPart(buffer, streamBuf, partNum);
 
-    if (!bytesRead)
+    if (!bytesRead && !m_isEmptyFile)
     {
         return false;
     }
@@ -565,7 +616,7 @@ bool UploadFileRequest::ProcessBuffer(const std::shared_ptr<UploadBuffer>& buffe
 bool UploadFileRequest::RequestPart(uint32_t partId)
 {
 
-    std::lock_guard<std::mutex> thisLock(m_pendingMutex);
+    std::unique_lock<std::mutex> thisLock(m_pendingMutex);
 
     auto partIter = m_pendingParts.find(partId);
 
@@ -577,11 +628,18 @@ bool UploadFileRequest::RequestPart(uint32_t partId)
     PartRequestRecord& partRequest = partIter->second;
 
     partRequest.m_retries++;
-    std::shared_ptr<Aws::Client::AsyncCallerContext> context = Aws::MakeShared<UploadFileContext>(ALLOCATION_TAG, shared_from_this());
+    
+    thisLock.unlock();
 
-    GetS3Client()->UploadPartAsync(partRequest.m_partRequest, &TransferClient::OnUploadPartRequest, context);
+    m_executor->Submit(&UploadFileRequest::UploadPartHelper, this, partRequest.m_partRequest);
 
     return true;
+}
+    
+void UploadFileRequest::UploadPartHelper(const Aws::S3::Model::UploadPartRequest& request)
+{
+    auto outcome = GetS3Client()->UploadPart(request);
+    HandleUploadPartOutcome(request, outcome);
 }
 
 bool UploadFileRequest::HandleUploadPartOutcome(const Aws::S3::Model::UploadPartRequest& request, const Aws::S3::Model::UploadPartOutcome& outcome)
@@ -590,7 +648,7 @@ bool UploadFileRequest::HandleUploadPartOutcome(const Aws::S3::Model::UploadPart
 
     PartRequestRecord partRequest;
     {
-        std::lock_guard<std::mutex> pendingLock(m_pendingMutex);
+        std::unique_lock<std::mutex> pendingLock(m_pendingMutex);
         auto partIter = m_pendingParts.find(request.GetPartNumber());
 
         if (partIter == m_pendingParts.end())
@@ -598,6 +656,7 @@ bool UploadFileRequest::HandleUploadPartOutcome(const Aws::S3::Model::UploadPart
             CompletionFailure("Bad part returned");
             return false;
         }
+        pendingLock.unlock();
 
         // Grab this guy by value for safety.  Possibly look at changing these around to smart pointers.
         partRequest = partIter->second;
@@ -609,10 +668,8 @@ bool UploadFileRequest::HandleUploadPartOutcome(const Aws::S3::Model::UploadPart
     if (outcome.IsSuccess() && (md5Hex.str() == outcomeETag.str()))
     {
         AddCompletedPart(partRequest, outcome.GetResult().GetETag());
-        CheckReacquireBuffers();
         return true;
     }
-    CheckReacquireBuffers();
     HandlePartFailure(outcome, partRequest);
     return false;
 }
@@ -624,12 +681,13 @@ void UploadFileRequest::ReusePart(PartRequestRecord& partRequest)
         std::lock_guard<std::mutex> pendingLock(m_pendingMutex);
         m_pendingParts.erase(partRequest.m_partRequest.GetPartNumber());
     }
-    ProcessBuffer(reuseBuffer);
+    AddReadyBuffer(reuseBuffer);
+//    ProcessBuffer(reuseBuffer);
 }
 
 void UploadFileRequest::AddCompletedPart(PartRequestRecord& partRequest, const Aws::String& eTag)
 {
-    std::lock_guard<std::mutex> lockPart(m_completePartMutex);
+    std::unique_lock<std::mutex> lockPart(m_completePartMutex);
 
     CompletedPart thisPart;
     thisPart.SetPartNumber(partRequest.m_partRequest.GetPartNumber());
@@ -638,17 +696,12 @@ void UploadFileRequest::AddCompletedPart(PartRequestRecord& partRequest, const A
 
     if (m_completedParts.size() == GetTotalParts() && !IsDone())
     {
+        lockPart.unlock();
         CompleteUpload();
     }
     PartReturned(partRequest);
 }
-
-void UploadFileRequest::ReleaseResources()
-{
-    std::lock_guard<std::mutex> lockGuard(m_resourceMutex);
-    m_resources = nullptr;
-}
-
+    
 void UploadFileRequest::CompleteUpload()
 {
     CompleteMultipartUploadRequest completeRequest;
@@ -657,13 +710,20 @@ void UploadFileRequest::CompleteUpload()
     completeRequest.SetUploadId(GetUploadId());
 
     CompletedMultipartUpload completeUpload;
+    
+    std::unique_lock<std::mutex> lockPart(m_completePartMutex);
     std::for_each(m_completedParts.begin(), m_completedParts.end(), [&](std::pair<uint32_t, const CompletedPart&> thisPair) { completeUpload.AddParts(thisPair.second); });
+    lockPart.unlock();
 
     completeRequest.WithMultipartUpload(completeUpload);
 
-    std::shared_ptr<Aws::Client::AsyncCallerContext> context = Aws::MakeShared<UploadFileContext>(ALLOCATION_TAG, shared_from_this());
-
-    GetS3Client()->CompleteMultipartUploadAsync(completeRequest, &TransferClient::OnCompleteMultipartUpload, context);
+    m_executor->Submit(&UploadFileRequest::CompleteMultipartUploadOutcomeHelper, this, completeRequest);
+}
+    
+void UploadFileRequest::CompleteMultipartUploadOutcomeHelper(const Aws::S3::Model::CompleteMultipartUploadRequest& request)
+{
+    auto outcome = GetS3Client()->CompleteMultipartUpload(request);
+    HandleCompleteMultipartUploadOutcome(request, outcome);
 }
 
 bool UploadFileRequest::HandleCompleteMultipartUploadOutcome(const Aws::S3::Model::CompleteMultipartUploadRequest& request, const Aws::S3::Model::CompleteMultipartUploadOutcome& outcome)
@@ -718,12 +778,6 @@ void UploadFileRequest::PartReturned(PartRequestRecord& partRequest)
 {
     ++m_partsReturned;
     ReusePart(partRequest);
-
-    // Whether we canceled midway or this was our final part it's ok to release the buffers now
-    if (AllPartsReturned())
-    {
-        ReleaseResources();
-    }
 }
 
 uint32_t UploadFileRequest::GetPartsReturned() const
@@ -779,9 +833,17 @@ bool UploadFileRequest::ProcessAvailableBuffers()
 
     std::shared_ptr<UploadBuffer> thisBuffer;
 
-    while (!DoneWithRequests() && GetReadyBuffer(thisBuffer))
+    while (!DoneWithRequests() && !IsCancelled())
     {
-        ProcessBuffer(thisBuffer);
+        if (GetReadyBuffer(thisBuffer))
+        {
+            ProcessBuffer(thisBuffer);
+        }
+        else
+        {
+            // TODO: sleep/wait instead?
+            std::this_thread::yield();
+        }
     }
     return true;
 }

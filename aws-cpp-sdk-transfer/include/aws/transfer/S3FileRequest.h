@@ -57,6 +57,9 @@ public:
 
     // IsDone is set when the operation has completed with or without success
     bool IsDone() const;
+    
+    // Set when the operation is cancelled
+    bool IsCancelled() const;
 
     // Set when the particular operation has entirely completed with success
     bool CompletedSuccessfully() const;

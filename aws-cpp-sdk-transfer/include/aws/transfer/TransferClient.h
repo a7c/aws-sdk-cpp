@@ -23,6 +23,7 @@
 #include <aws/transfer/TransferClientDefs.h>
 
 #include <aws/s3/S3Client.h>
+#include <aws/core/utils/threading/Executor.h>
 
 namespace Aws
 {
@@ -58,7 +59,7 @@ struct AWS_TRANSFER_API TransferClientConfiguration
 class AWS_TRANSFER_API TransferClient
 {
     public:
-        TransferClient(const std::shared_ptr<Aws::S3::S3Client>& s3Client, const TransferClientConfiguration& config);
+        TransferClient(const std::shared_ptr<Aws::S3::S3Client>& s3Client, const TransferClientConfiguration& config, const std::shared_ptr<Aws::Utils::Threading::BlockingExecutor>& executor = nullptr);
         ~TransferClient();
 
         // Entry point for attempting an upload - attempting to create an existing bucket won't hurt anything but will affect performance
@@ -68,6 +69,15 @@ class AWS_TRANSFER_API TransferClient
         // Entry point similar to above but with metadata specified
         std::shared_ptr<UploadFileRequest> UploadFile(const Aws::String& fileName, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, const Aws::Map<Aws::String, Aws::String>& metadata, bool createBucket = false, bool doConsistencyChecks = false);
         std::shared_ptr<UploadFileRequest> UploadFile(const Aws::String& fileName, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, Aws::Map<Aws::String, Aws::String>&& metadata, bool createBucket = false, bool doConsistencyChecks = false);
+    
+        /** Same as constructors above but takes in a file stream.
+         *  Preconditions: 
+         *      (1) inputStream must be seekable in both directions.
+         *      (2) A non-empty keyName must be provided. */
+        std::shared_ptr<UploadFileRequest> UploadFile(std::shared_ptr<Aws::IOStream> inputStream, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, bool createBucket = false, bool doConsistencyChecks = false);
+        std::shared_ptr<UploadFileRequest> UploadFile(std::shared_ptr<Aws::IOStream> inputStream, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, const Aws::Map<Aws::String, Aws::String>& metadata, bool createBucket = false, bool doConsistencyChecks = false);
+        std::shared_ptr<UploadFileRequest> UploadFile(std::shared_ptr<Aws::IOStream> inputStream, const Aws::String& bucketName, const Aws::String& keyName, const Aws::String& contentType, Aws::Map<Aws::String, Aws::String>&& metadata, bool createBucket = false, bool doConsistencyChecks = false);
+        // TODO: add constructors with metadata
 
         // User requested upload cancels should go through here
         void CancelUpload(std::shared_ptr<UploadFileRequest>& fileRequest) const;
@@ -103,7 +113,7 @@ class AWS_TRANSFER_API TransferClient
             const Aws::S3::Model::CreateBucketRequest& request,
             const Aws::S3::Model::CreateBucketOutcome& outcome,
             const std::shared_ptr<const Aws::Client::AsyncCallerContext>& context);
-
+    
         static void OnCreateMultipartUpload(const Aws::S3::S3Client* s3Client,
             const Aws::S3::Model::CreateMultipartUploadRequest& request,
             const Aws::S3::Model::CreateMultipartUploadOutcome& outcome,
@@ -163,6 +173,7 @@ class AWS_TRANSFER_API TransferClient
 
         std::shared_ptr<Aws::S3::S3Client> m_s3Client;
         TransferClientConfiguration m_config;
+        std::shared_ptr<Aws::Utils::Threading::BlockingExecutor> m_executor;
 
         std::shared_ptr<UploadBufferResourceManagerType> m_uploadBufferManager;
     

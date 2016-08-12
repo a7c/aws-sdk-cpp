@@ -50,6 +50,9 @@ using namespace Aws::Utils;
 
 static const char* TEST_FILE_NAME = "TransferTestFile.txt"; // Also used as key
 
+static const char* EMPTY_TEST_FILE_NAME = "EmptyTransferTestFile.txt";
+static const char* EMPTY_FILE_KEY = "EmptyFileKey";
+
 static const char* SMALL_TEST_FILE_NAME = "SmallTransferTestFile.txt";
 static const char* SMALL_FILE_KEY = "SmallFileKey";
 
@@ -71,9 +74,10 @@ static const char* BIG_FILE_KEY = "BigFileKey";
 
 static const char* CANCEL_TEST_FILE_NAME = "CancelTestFile.txt";
 static const char* CANCEL_FILE_KEY = "CancelFileKey";
-static const char* CANCEL_FILE_KEY2 = "CancelFileKey2";
+//static const char* CANCEL_FILE_KEY2 = "CancelFileKey2";
 
 static const char* TEST_BUCKET_NAME_BASE = "transferintegrationtestbucket";
+static const unsigned EMPTY_TEST_SIZE = 0;
 static const unsigned SMALL_TEST_SIZE = MB5_BUFFER_SIZE / 2;
 static const unsigned MEDIUM_TEST_SIZE = MB5_BUFFER_SIZE * 3 / 2;
 
@@ -100,6 +104,7 @@ public:
     static std::shared_ptr<TransferClient> m_transferClient;
 
     static Aws::String m_testFileName;
+    static Aws::String m_emptyTestFileName;
     static Aws::String m_smallTestFileName;
     static Aws::String m_bigTestFileName;
     static Aws::String m_mediumTestFileName;
@@ -256,6 +261,7 @@ protected:
         DeleteBucket(GetTestBucketName());
 
 	    m_testFileName = MakeFilePath( TEST_FILE_NAME );
+        m_emptyTestFileName = MakeFilePath ( EMPTY_TEST_FILE_NAME );
         m_smallTestFileName = MakeFilePath( SMALL_TEST_FILE_NAME );
         m_bigTestFileName = MakeFilePath( BIG_TEST_FILE_NAME );
         m_mediumTestFileName = MakeFilePath( MEDIUM_TEST_FILE_NAME );
@@ -264,6 +270,7 @@ protected:
         m_multiPartContentFile = MakeFilePath( MULTI_PART_CONTENT_FILE );
 
         CreateTestFile(m_testFileName, MB5_BUFFER_SIZE, testString);
+        CreateTestFile(m_emptyTestFileName, EMPTY_TEST_SIZE, testString);
         CreateTestFile(m_smallTestFileName, SMALL_TEST_SIZE, testString);
         CreateTestFile(m_bigTestFileName, BIG_TEST_SIZE, testString);
         CreateTestFile(m_mediumTestFileName, MEDIUM_TEST_SIZE, testString);
@@ -485,6 +492,7 @@ protected:
         AbortMultiPartUpload(GetTestBucketName(), BIG_FILE_KEY);
         DeleteBucket(GetTestBucketName());
         Aws::FileSystem::RemoveFileIfExists(m_testFileName.c_str());
+        Aws::FileSystem::RemoveFileIfExists(m_emptyTestFileName.c_str());
         Aws::FileSystem::RemoveFileIfExists(m_smallTestFileName.c_str());
         Aws::FileSystem::RemoveFileIfExists(m_contentTestFileName.c_str());
         Aws::FileSystem::RemoveFileIfExists(m_bigTestFileName.c_str());
@@ -527,6 +535,7 @@ std::shared_ptr<S3Client> TransferTests::m_s3Client(nullptr);
 std::shared_ptr<TransferClient> TransferTests::m_transferClient(nullptr);
 
 Aws::String TransferTests::m_testFileName;
+Aws::String TransferTests::m_emptyTestFileName;
 Aws::String TransferTests::m_smallTestFileName;
 Aws::String TransferTests::m_bigTestFileName;
 Aws::String TransferTests::m_mediumTestFileName;
@@ -572,6 +581,42 @@ TEST_F(TransferTests, SinglePartUploadTest)
 
     ASSERT_TRUE(CheckListObjectsValidation(requestPtr));
 }
+    
+// Make sure uploading an empty file works too
+TEST_F(TransferTests, EmptyUploadTest)
+{
+    if (EmptyBucket(GetTestBucketName()))
+    {
+        WaitForBucketToEmpty(GetTestBucketName());
+    }
+    GetObjectRequest getObjectRequest;
+    getObjectRequest.SetBucket(GetTestBucketName());
+    getObjectRequest.SetKey(EMPTY_FILE_KEY);
+    
+    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
+    EXPECT_FALSE(getObjectOutcome.IsSuccess());
+    
+    const bool cCreateBucket = false;
+    const bool cConsistencyChecks = false;
+    // Test with default behavior of using file name as key
+    std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(m_emptyTestFileName, GetTestBucketName(), EMPTY_FILE_KEY, "", cCreateBucket, cConsistencyChecks);
+    
+    ASSERT_EQ(requestPtr->GetTotalParts(), 1u);
+    
+    WaitForUploadAndUpdate(requestPtr, 100.0f);
+    
+    ASSERT_TRUE(requestPtr->IsDone());
+    
+    ASSERT_TRUE(requestPtr->CompletedSuccessfully());
+    
+    uint64_t fileSize = requestPtr->GetFileSize();
+    ASSERT_TRUE(fileSize == EMPTY_TEST_SIZE);
+    
+    WaitForObjectToPropagate(GetTestBucketName(), EMPTY_TEST_FILE_NAME);
+    
+    ASSERT_TRUE(CheckListObjectsValidation(requestPtr));
+}
+
 
 // Half size file - similar to our 5 meg test, let's make sure we're processing < 1 part files correctly
 TEST_F(TransferTests, SmallTest)
@@ -1147,86 +1192,88 @@ TEST_F(TransferTests, MultiBigTest)
 
 }
 
+// TODO: This test should be deprecated because the resource handling has been delegated to BlockingExecutor
+    
 // Here we're testing to make sure the expected results occur when the handler we've been given for the upload goes out of scope
 // Behind the scenes our request contexts contain additional shared pointers to our handlers which should keep them in scope
 // meaning they should continue to process as they were last told.  Outstanding requests will finish, cancels will complete
 // the parts in progress and then cancel correctly, and buffers should properly be freed up to hand to the next request to process
-TEST_F(TransferTests, ScopeTests)
-{
-    if (EmptyBucket(GetTestBucketName()))
-    {
-        WaitForBucketToEmpty(GetTestBucketName());
-    }
-    GetObjectRequest getObjectRequest;
-    getObjectRequest.SetBucket(GetTestBucketName());
-    getObjectRequest.SetKey(TEST_FILE_NAME);
-
-    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
-    EXPECT_FALSE(getObjectOutcome.IsSuccess());
-
-    ListMultipartUploadsRequest listMultipartRequest;
-    listMultipartRequest.SetBucket(GetTestBucketName());
-
-    bool createBucket = true; // Yes please, create the bucket
-    const bool cConsistencyChecks = true;
-    const float cCancelPercent = 10.0;
-
-    // First we'll grab a single buffer
-    {
-        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(SMALL_TEST_FILE_NAME, GetTestBucketName(), "", "", createBucket, cConsistencyChecks);
-    }
-
-    createBucket = false;
-
-    // Now grab all available buffers (19 by default though we want 20)
-    {
-        if (EmptyBucket(GetTestBucketName()))
-        {
-            WaitForBucketToEmpty(GetTestBucketName());
-        }
-        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(CANCEL_TEST_FILE_NAME, GetTestBucketName(), CANCEL_FILE_KEY, "", createBucket, cConsistencyChecks);
-
-        uint64_t fileSize = requestPtr->GetFileSize();
-
-        ASSERT_EQ(fileSize, CANCEL_TEST_SIZE / testStrLen * testStrLen);
-
-        ASSERT_FALSE(requestPtr->IsDone());
-        WaitForUploadAndUpdate(requestPtr, cCancelPercent);
-        // Cancel though we have outstanding requests we've started which keep our buffers locked
-        m_transferClient->CancelUpload(requestPtr);
-    }
-    {
-        // Now this guy should start with one buffer (The initial one after it's done)
-        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(CANCEL_TEST_FILE_NAME, GetTestBucketName(), CANCEL_FILE_KEY2, "", createBucket, cConsistencyChecks);
-
-        size_t startBuffers = requestPtr->GetResourcesInUse();
-
-        uint64_t fileSize = requestPtr->GetFileSize();
-
-        ASSERT_EQ(fileSize, CANCEL_TEST_SIZE / testStrLen * testStrLen);
-
-        ASSERT_FALSE(requestPtr->IsDone());
-
-        size_t finalBuffers = startBuffers;
-        unsigned timeoutCount = 0;
-
-        // And some time during the process should collect the buffers from our canceled upload
-        while (timeoutCount++ < TEST_WAIT_TIMEOUT_LONG && !requestPtr->IsDone())
-        {
-            finalBuffers = requestPtr->GetResourcesInUse();
-            if (finalBuffers != startBuffers)
-            {
-                m_transferClient->CancelUpload(requestPtr);
-                break;
-            }
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-        }
-
-        // Either we got more buffers, or we started with everything we could use
-        // either because our start value is artificially low or we finished our initial uploads incredibly fast
-        EXPECT_TRUE(startBuffers == m_transferClient->GetConfigBufferCount() || finalBuffers != startBuffers || requestPtr->CompletedSuccessfully());
-    }
-}
+//TEST_F(TransferTests, ScopeTests)
+//{
+//    if (EmptyBucket(GetTestBucketName()))
+//    {
+//        WaitForBucketToEmpty(GetTestBucketName());
+//    }
+//    GetObjectRequest getObjectRequest;
+//    getObjectRequest.SetBucket(GetTestBucketName());
+//    getObjectRequest.SetKey(TEST_FILE_NAME);
+//
+//    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
+//    EXPECT_FALSE(getObjectOutcome.IsSuccess());
+//
+//    ListMultipartUploadsRequest listMultipartRequest;
+//    listMultipartRequest.SetBucket(GetTestBucketName());
+//
+//    bool createBucket = true; // Yes please, create the bucket
+//    const bool cConsistencyChecks = true;
+//    const float cCancelPercent = 10.0;
+//
+//    // First we'll grab a single buffer
+//    {
+//        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(SMALL_TEST_FILE_NAME, GetTestBucketName(), "", "", createBucket, cConsistencyChecks);
+//    }
+//
+//    createBucket = false;
+//
+//    // Now grab all available buffers (19 by default though we want 20)
+//    {
+//        if (EmptyBucket(GetTestBucketName()))
+//        {
+//            WaitForBucketToEmpty(GetTestBucketName());
+//        }
+//        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(CANCEL_TEST_FILE_NAME, GetTestBucketName(), CANCEL_FILE_KEY, "", createBucket, cConsistencyChecks);
+//
+//        uint64_t fileSize = requestPtr->GetFileSize();
+//
+//        ASSERT_EQ(fileSize, CANCEL_TEST_SIZE / testStrLen * testStrLen);
+//
+//        ASSERT_FALSE(requestPtr->IsDone());
+//        WaitForUploadAndUpdate(requestPtr, cCancelPercent);
+//        // Cancel though we have outstanding requests we've started which keep our buffers locked
+//        m_transferClient->CancelUpload(requestPtr);
+//    }
+//    {
+//        // Now this guy should start with one buffer (The initial one after it's done)
+//        std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(CANCEL_TEST_FILE_NAME, GetTestBucketName(), CANCEL_FILE_KEY2, "", createBucket, cConsistencyChecks);
+//
+//        size_t startBuffers = requestPtr->GetResourcesInUse();
+//
+//        uint64_t fileSize = requestPtr->GetFileSize();
+//
+//        ASSERT_EQ(fileSize, CANCEL_TEST_SIZE / testStrLen * testStrLen);
+//
+//        ASSERT_FALSE(requestPtr->IsDone());
+//
+//        size_t finalBuffers = startBuffers;
+//        unsigned timeoutCount = 0;
+//
+//        // And some time during the process should collect the buffers from our canceled upload
+//        while (timeoutCount++ < TEST_WAIT_TIMEOUT_LONG && !requestPtr->IsDone())
+//        {
+//            finalBuffers = requestPtr->GetResourcesInUse();
+//            if (finalBuffers != startBuffers)
+//            {
+//                m_transferClient->CancelUpload(requestPtr);
+//                break;
+//            }
+//            std::this_thread::sleep_for(std::chrono::seconds(1));
+//        }
+//
+//        // Either we got more buffers, or we started with everything we could use
+//        // either because our start value is artificially low or we finished our initial uploads incredibly fast
+//        EXPECT_TRUE(startBuffers == m_transferClient->GetConfigBufferCount() || finalBuffers != startBuffers || requestPtr->CompletedSuccessfully());
+//    }
+//}
 
 // Single part upload with metadata specified
 TEST_F(TransferTests, SinglePartUploadWithMetadataTest)
@@ -1322,5 +1369,106 @@ TEST_F(TransferTests, MultipartUploadWithMetadataTest)
     ASSERT_EQ(metadata["key1"], headObjectMetadata["key1"]);
     ASSERT_EQ(metadata["key2"], headObjectMetadata["key2"]);
 }
+    
+// Similar to SmallTest, but passes in a string stream for upload instead of a file name
+TEST_F(TransferTests, StreamSmallTest)
+{
+    if (EmptyBucket(GetTestBucketName()))
+    {
+        WaitForBucketToEmpty(GetTestBucketName());
+    }
+    
+    GetObjectRequest getObjectRequest;
+    getObjectRequest.SetBucket(GetTestBucketName());
+    getObjectRequest.SetKey(SMALL_FILE_KEY);
+    
+    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
+    EXPECT_FALSE(getObjectOutcome.IsSuccess());
+    
+    ListMultipartUploadsRequest listMultipartRequest;
+    listMultipartRequest.SetBucket(GetTestBucketName());
+    
+    Aws::IFStream ifstream;
+    ifstream.open(SMALL_TEST_FILE_NAME);
+    ASSERT_TRUE(ifstream.is_open());
+    
+    auto sstream = Aws::MakeShared<Aws::StringStream>(ALLOCATION_TAG);
+    *sstream << ifstream.rdbuf();
+    ifstream.close();
+    
+    const bool cCreateBucket = false;
+    const bool cConsistencyChecks = false;
+    // Not creating the bucket.. it should be there
+    // No consistency checks on this one, just verifying that it seems to complete
+    std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(sstream, GetTestBucketName(), SMALL_FILE_KEY, "", cCreateBucket, cConsistencyChecks);
+    
+    ASSERT_EQ(requestPtr->GetTotalParts(), 1u); // Should be about 2.5 megs
+    
+    ASSERT_FALSE(requestPtr->IsDone());
+    
+    WaitForUploadAndUpdate(requestPtr, 100.0f);
+    
+    ASSERT_TRUE(requestPtr->IsDone());
+    
+    uint64_t fileSize = requestPtr->GetFileSize();
+    ASSERT_TRUE(fileSize == (SMALL_TEST_SIZE / testStrLen * testStrLen));
+    
+    ASSERT_TRUE(requestPtr->CompletedSuccessfully());
+}
+    
+// Small version of single-part upload with metadata test that passes in a stream instead of a file
+TEST_F(TransferTests, StreamSinglePartUploadWithMetadataTest)
+{
+    if (EmptyBucket(GetTestBucketName()))
+    {
+        WaitForBucketToEmpty(GetTestBucketName());
+    }
+    GetObjectRequest getObjectRequest;
+    getObjectRequest.SetBucket(GetTestBucketName());
+    getObjectRequest.SetKey(SMALL_TEST_FILE_NAME);
+    
+    GetObjectOutcome getObjectOutcome = m_s3Client->GetObject(getObjectRequest);
+    EXPECT_FALSE(getObjectOutcome.IsSuccess());
+    
+    Aws::IFStream ifstream;
+    ifstream.open(SMALL_TEST_FILE_NAME);
+    ASSERT_TRUE(ifstream.is_open());
+    
+    auto sstream = Aws::MakeShared<Aws::StringStream>(ALLOCATION_TAG);
+    *sstream << ifstream.rdbuf();
+    ifstream.close();
+    
+    Aws::Map<Aws::String, Aws::String> metadata;
+    metadata["key1"] = "val1";
+    metadata["key2"] = "val2";
+    const bool cCreateBucket = false;
+    const bool cConsistencyChecks = false;
+    std::shared_ptr<UploadFileRequest> requestPtr = m_transferClient->UploadFile(sstream, GetTestBucketName(), SMALL_TEST_FILE_NAME, "", metadata, cCreateBucket, cConsistencyChecks);
+    
+    ASSERT_FALSE(requestPtr->IsDone());
+    
+    WaitForUploadAndUpdate(requestPtr, 100.0f);
+    
+    ASSERT_TRUE(requestPtr->IsDone());
+    
+    ASSERT_TRUE(requestPtr->CompletedSuccessfully());
+    
+    WaitForObjectToPropagate(GetTestBucketName(), SMALL_TEST_FILE_NAME);
+    
+    // Check the metadata matches
+    HeadObjectRequest headObjectRequest;
+    headObjectRequest.SetBucket(GetTestBucketName());
+    headObjectRequest.SetKey(SMALL_TEST_FILE_NAME);
+    
+    HeadObjectOutcome headObjectOutcome = m_s3Client->HeadObject(headObjectRequest);
+    ASSERT_TRUE(headObjectOutcome.IsSuccess());
+    
+    Aws::Map<Aws::String, Aws::String> headObjectMetadata = headObjectOutcome.GetResult().GetMetadata();
+    ASSERT_EQ(metadata.size(), headObjectMetadata.size());
+    ASSERT_EQ(metadata["key1"], headObjectMetadata["key1"]);
+    ASSERT_EQ(metadata["key2"], headObjectMetadata["key2"]);
+    
+}
+
 
 }
